@@ -26,23 +26,39 @@ For each philosopher/thread we have this process:
      p4 : putdown(i)
 ```
 
-### ```pickup(i)```
-The ```pickup()``` function is called by a philosopher when they want to pick up both chopsticks and start eating. This function first sets the philosopher's state to HUNGRY, and then checks whether both of their neighboring philosophers are not currently eating. If both neighboring philosophers are not eating, the philosopher is allowed to start eating by setting their state to EATING and calling ```sem_post()``` on the semaphore representing their right chopstick.
+### ```test(i)```
+This function is responsible for testing whether a philosopher with index i can start eating. It checks if the philosopher has eaten less than both of their neighbors and if both neighbors are not currently eating. If these conditions are met, the philosopher's state is updated to EATING, and a signal is sent to wake up the philosopher.
 
-If one or both neighboring philosophers are currently eating, the philosopher has to wait until both chopsticks are available before being allowed to start eating. This is achieved by calling ```sem_wait()``` on the semaphore representing their left chopstick.
+```c
+void test(int i) {
+    if(times_eaten[i] <= times_eaten[left(i)] && times_eaten[i] <= times_eaten[right(i)]) {
+        if (state[i] == HUNGRY && state[left(i)] != EATING && state[right(i)] != EATING) {
+            state[i] = EATING;
+            pthread_cond_signal(&cond[i]);
+        }
+    }
+}
+```
+
+### ```pickup(i)```
+This function is called when a philosopher with index i wants to pick up the forks and start eating. It locks the mutex to ensure mutual exclusion, sets the philosopher's state to HUNGRY, and calls test(i) to check if the philosopher can start eating. If the philosopher is not able to start eating, it waits on the condition variable cond[i] until it receives a signal indicating that it can proceed. After acquiring the forks, it unlocks the mutex to allow other philosophers to access the test() and pickup() functions.
 
 ```c
 void pickup(int i) {
     pthread_mutex_lock(&mutex);
     state[i] = HUNGRY;
     test(i);
+
+    if (state[i] != EATING) {
+        pthread_cond_wait(&cond[i],&mutex);
+    }
+
     pthread_mutex_unlock(&mutex);
-    sem_wait(&chopsticks[i]);
 }
 ```
 
 ### ```putdown(i)```
-The ```putdown()``` function is called by a philosopher when they have finished eating and want to put down both chopsticks. This function sets the philosopher's state to THINKING and then checks whether either of their neighboring philosophers is currently hungry and waiting for chopsticks. If either neighboring philosopher is currently hungry, the ```putdown()``` function calls ```test()``` on that philosopher to allow them to start eating if both chopsticks are available.
+This function is called when a philosopher with index i finishes eating and wants to put down the forks. Similar to pickup(), it locks the mutex, sets the philosopher's state to THINKING, and calls test() for its left and right neighbors to check if they can start eating now. Then it signals both neighbors by using pthread_cond_signal() to wake them up in case they were waiting. Finally, it unlocks the mutex.
 
 ```c
 void putdown(int i) {
@@ -50,21 +66,36 @@ void putdown(int i) {
     state[i] = THINKING;
     test(left(i));
     test(right(i));
+
+    pthread_cond_signal(&cond[left(i)]);
+    pthread_cond_signal(&cond[right(i)]);
+
     pthread_mutex_unlock(&mutex);
 }
 ```
 
-### ```test(i)```
-The ```test()``` function is called by a philosopher whenever their state changes. This function checks whether the philosopher is currently hungry and both of their neighboring philosophers are not currently eating. If both neighboring philosophers are not currently eating, the philosopher is allowed to start eating by setting their state to EATING and calling ```sem_post()``` on the semaphore representing their right chopstick.
+### ```philosopher(void *arg)```
+This is the function executed by each philosopher thread. It receives an argument arg, which is a pointer to the philosopher's ID. The philosopher enters an infinite loop where it thinks for some time, calls pickup() to start eating, increments its times_eaten count, checks for starvation by printing the times_eaten array, eats for some time, and finally calls putdown() to finish eating.
 
 ```c
-void test(int i) {
-    if (state[i] == HUNGRY && state[left(i)] != EATING && state[right(i)] != EATING) {
-        state[i] = EATING;
-        sem_post(&chopsticks[i]);
+void *philosopher(void *arg) {
+    int id = *(int *)arg;
+    while (1) {
+        printf("Philosopher %d is thinking\n", id);
+        sleep(rand() % 5 + 1); // Thinking for some time
+        printf("Philosopher %d is hungry\n", id);
+        pickup(id);
+        printf("Philosopher %d is eating\n", id);
+        times_eaten[id]++;
+        printf("Philosopher %d has eaten\n", id);
+        printf("%d | %d | %d | %d | %d\n", times_eaten[0], times_eaten[1], times_eaten[2], times_eaten[3], times_eaten[4]); // <- check for starvation
+        sleep(rand() % 5 + 1); // Eating for some time
+        putdown(id);
     }
+    return NULL;
 }
 ```
+
 
 
 ## Results
@@ -81,11 +112,13 @@ We used the ```times_eaten[NUM_PHILOSOPHERS] ``` array to count and show us how 
 
 [...]
 
-57 | 66 | 50 | 62 | 49
-58 | 66 | 50 | 62 | 49
-58 | 67 | 50 | 62 | 49
-58 | 67 | 50 | 62 | 50
-58 | 67 | 51 | 62 | 50
+81 | 85 | 82 | 81 | 79
+81 | 85 | 83 | 81 | 79
+82 | 85 | 83 | 81 | 79
+82 | 85 | 83 | 81 | 80
+83 | 85 | 83 | 81 | 80
+83 | 86 | 83 | 81 | 80
+84 | 86 | 83 | 81 | 80
 ```
 
 As we can see, the philosophers are eating in a fair way, and no philosopher is starving.
